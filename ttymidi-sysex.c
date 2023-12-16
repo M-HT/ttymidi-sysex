@@ -187,12 +187,12 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 void arg_set_defaults(arguments_t *arguments)
 {
-	char *serialdevice_temp = "/dev/serial0";
+	char *serialdevice_temp = "/dev/ttyUSB0";
 	arguments->printonly    = 0;
 	arguments->silent       = 0;
 	arguments->verbose      = 0;
-	arguments->baudrate     = B38400;
-	char *name_tmp		= (char *)"MIDI";
+	arguments->baudrate     = B115200;
+	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
 	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN);
 }
@@ -218,7 +218,7 @@ int open_seq(snd_seq_t** seq)
 	}
 
 	snd_seq_set_client_name(*seq, arguments.name);
-	
+
 	char nameInput[MAX_DEV_STR_LEN];
 	strcpy(nameInput, arguments.name);
 	strcat(nameInput, " In");
@@ -229,7 +229,7 @@ int open_seq(snd_seq_t** seq)
 	{
 		fprintf(stderr, "Error creating sequencer MIDI out port.\n");  // *new*
 	}
-	
+
 	char nameOutput[MAX_DEV_STR_LEN];
 	strcpy(nameOutput, arguments.name);
 	strcat(nameOutput, " Out");
@@ -699,7 +699,7 @@ void* read_midi_from_serial_port(void* seq)
 	unsigned char buf[BUF_SIZE], msg[MAX_MSG_SIZE];  // *new*
 	int i, msglen, bytesleft;  // *new* (buflen in JW's code not used)
         struct timespec u10ms;
-  
+
         /* set-up a small sleep in case fo error to avoid cpu hungry loops */
         u10ms.tv_sec  = 0;
         u10ms.tv_nsec = 10000000L;
@@ -739,7 +739,7 @@ void* read_midi_from_serial_port(void* seq)
 
 		while (i < bytesleft) {  // *new*
 			int ret = read(serial, buf+i, 1);
-                        if (ret==0) { 
+                        if (ret==0) {
                                 /* serial error somewhere */
                                 printf("SerialIn error %02X %d %d\n", buf[0], ret, errno);
                                 nanosleep(&u10ms, NULL);
