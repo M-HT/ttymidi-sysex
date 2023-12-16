@@ -127,8 +127,8 @@ typedef struct _arguments
 
 void exit_cli(int sig)
 {
+	if (run) printf("\nttymidi closing down...");
 	run = FALSE;
-	printf("\nttymidi closing down...");
 }
 
 static error_t parse_opt (int key, char *arg, struct argp_state *state)
@@ -708,6 +708,7 @@ void* read_midi_from_serial_port(void* seq)
 	if (!arguments.printonly) {
 		do {
 			int ret = read(serial, buf, 1);
+			if (!run) break;
 			if (ret == 0) { nanosleep(&u10ms, NULL); continue; }
 			buf[0] = buf[0] & 0xFF;  // *new* &0xFF (protection ?)
 		}
@@ -907,17 +908,22 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	 * read commands
 	 */
 
+	run = TRUE;
+	struct sigaction signal_action;
+	signal_action.sa_handler = exit_cli;
+	sigemptyset(&signal_action.sa_mask);
+	signal_action.sa_flags = 0;
+	sigaction(SIGINT, &signal_action, NULL);
+	sigaction(SIGTERM, &signal_action, NULL);
+
 	/* Starting thread that is polling alsa midi in port */
 	pthread_t midi_out_thread, midi_in_thread;
 	int iret1, iret2;
-	run = TRUE;
 	iret1 = pthread_create(&midi_out_thread, NULL, read_midi_from_alsa, (void*) seq);
 	/* And also thread for polling serial data. As serial is currently read in
 		blocking mode, by this we can enable ctrl+c quiting and avoid zombie
 		alsa ports when killing app with ctrl+z */
 	iret2 = pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) seq);
-	signal(SIGINT, exit_cli);
-	signal(SIGTERM, exit_cli);
 
 	while (run)
 	{
@@ -925,7 +931,15 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	}
 
 	void* status;
-	pthread_join(midi_out_thread, &status);
+	if (iret1 == 0)
+	{
+		pthread_join(midi_out_thread, &status);
+	}
+	if (iret2 == 0)
+	{
+		pthread_kill(midi_in_thread, SIGINT);
+		pthread_join(midi_in_thread, &status);
+	}
 
 	/* restore the old port settings */
 	tcsetattr(serial, TCSANOW, &oldtio);
