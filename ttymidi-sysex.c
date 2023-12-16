@@ -151,11 +151,11 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 			break;
 		case 's':
 			if (arg == NULL) break;
-			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN);
+			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN - 1);
 			break;
 		case 'n':
 			if (arg == NULL) break;
-			strncpy(arguments->name, arg, MAX_DEV_STR_LEN);
+			strncpy(arguments->name, arg, MAX_DEV_STR_LEN - 1);
 			break;
 		case 'b':
 			if (arg == NULL) break;
@@ -193,8 +193,8 @@ void arg_set_defaults(arguments_t *arguments)
 	arguments->verbose      = 0;
 	arguments->baudrate     = B115200;
 	char *name_tmp		= (char *)"ttymidi";
-	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
-	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN);
+	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN - 1);
+	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN - 1);
 }
 
 const char *argp_program_version     = "ttymidi 0.60";
@@ -219,7 +219,7 @@ int open_seq(snd_seq_t** seq)
 
 	snd_seq_set_client_name(*seq, arguments.name);
 
-	char nameInput[MAX_DEV_STR_LEN];
+	char nameInput[MAX_DEV_STR_LEN + 3];
 	strcpy(nameInput, arguments.name);
 	strcat(nameInput, " In");
 
@@ -230,7 +230,7 @@ int open_seq(snd_seq_t** seq)
 		fprintf(stderr, "Error creating sequencer MIDI out port.\n");  // *new*
 	}
 
-	char nameOutput[MAX_DEV_STR_LEN];
+	char nameOutput[MAX_DEV_STR_LEN + 4];
 	strcpy(nameOutput, arguments.name);
 	strcat(nameOutput, " Out");
 
@@ -692,17 +692,19 @@ void* read_midi_from_alsa(void* seq)
 	}
 
 	printf("\nStopping [PC]->[Hardware] communication...");
+
+	return NULL;
 }
 
 void* read_midi_from_serial_port(void* seq)
 {
 	unsigned char buf[BUF_SIZE], msg[MAX_MSG_SIZE];  // *new*
 	int i, msglen, bytesleft;  // *new* (buflen in JW's code not used)
-        struct timespec u10ms;
+	struct timespec u10ms;
 
-        /* set-up a small sleep in case fo error to avoid cpu hungry loops */
-        u10ms.tv_sec  = 0;
-        u10ms.tv_nsec = 10000000L;
+	/* set-up a small sleep in case fo error to avoid cpu hungry loops */
+	u10ms.tv_sec  = 0;
+	u10ms.tv_nsec = 10000000L;
 
 	/* Lets first fast forward to first status byte... */
 	if (!arguments.printonly) {
@@ -740,13 +742,13 @@ void* read_midi_from_serial_port(void* seq)
 
 		while (i < bytesleft) {  // *new*
 			int ret = read(serial, buf+i, 1);
-                        if (ret==0) {
-                                /* serial error somewhere */
-                                printf("SerialIn error %02X %d %d\n", buf[0], ret, errno);
-                                nanosleep(&u10ms, NULL);
-                                bytesleft = 0;
-                                break;
-                        }
+			if (ret==0) {
+				/* serial error somewhere */
+				printf("SerialIn error %02X %d %d\n", buf[0], ret, errno);
+				nanosleep(&u10ms, NULL);
+				bytesleft = 0;
+				break;
+			}
 			buf[i] = buf[i] & 0xFF;  // *new* &0xFF (protection ?)
 
 			if (buf[i] >> 7 != 0) {
@@ -813,6 +815,8 @@ void* read_midi_from_serial_port(void* seq)
 			parse_midi_command(seq, port_out_id, buf, i);  // *new* (was i+1 in EB's code)
 		}
 	}
+
+	return NULL;
 }
 
 
@@ -823,8 +827,7 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 {
 	//arguments arguments;
 	struct termios oldtio, newtio;
-	struct serial_struct ser_info;
-	char* modem_device = "/dev/ttyS0";
+	//struct serial_struct ser_info;
 	snd_seq_t *seq;
 
 	arg_set_defaults(&arguments);
@@ -943,5 +946,6 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 
 	/* restore the old port settings */
 	tcsetattr(serial, TCSANOW, &oldtio);
+	close(serial);
 	printf("\ndone!\n");
 }
