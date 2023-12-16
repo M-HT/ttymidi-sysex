@@ -921,12 +921,16 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 
 	/* Starting thread that is polling alsa midi in port */
 	pthread_t midi_out_thread, midi_in_thread;
+	pthread_attr_t thread_attr;
 	int iret1, iret2;
-	iret1 = pthread_create(&midi_out_thread, NULL, read_midi_from_alsa, (void*) seq);
+	pthread_attr_init(&thread_attr);
+	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
+	iret1 = pthread_create(&midi_out_thread, &thread_attr, read_midi_from_alsa, (void*) seq);
 	/* And also thread for polling serial data. As serial is currently read in
 		blocking mode, by this we can enable ctrl+c quiting and avoid zombie
 		alsa ports when killing app with ctrl+z */
-	iret2 = pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) seq);
+	iret2 = pthread_create(&midi_in_thread, &thread_attr, read_midi_from_serial_port, (void*) seq);
+	pthread_attr_destroy(&thread_attr);
 
 	while (run)
 	{
