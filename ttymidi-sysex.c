@@ -83,11 +83,17 @@
 #include <alsa/asoundlib.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
-#include <asm/ioctls.h>
-#include <time.h>
+#include <sys/ioctl.h>
+// Custom baud rates
+#undef NCCS
+#define termios termios_HIDE
+#include <asm/termbits.h>
+#undef termios
+#undef NCCS
 
 #define FALSE               0
 #define TRUE                1
@@ -121,7 +127,7 @@ typedef struct _arguments
 {
 	int  silent, verbose, printonly;
 	char serialdevice[MAX_DEV_STR_LEN];
-	int  baudrate;
+	speed_t baudrate, customrate;
 	char name[MAX_DEV_STR_LEN];
 } arguments_t;
 
@@ -168,6 +174,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 					case 4800   : arguments->baudrate = B4800  ; break;
 					case 9600   : arguments->baudrate = B9600  ; break;
 					case 19200  : arguments->baudrate = B19200 ; break;
+					case 31250  : arguments->baudrate = B38400 ; arguments->customrate = 31250; break;
 					case 38400  : arguments->baudrate = B38400 ; break;
 					case 57600  : arguments->baudrate = B57600 ; break;
 					case 115200 : arguments->baudrate = B115200; break;
@@ -192,6 +199,7 @@ void arg_set_defaults(arguments_t *arguments)
 	arguments->silent       = 0;
 	arguments->verbose      = 0;
 	arguments->baudrate     = B115200;
+	arguments->customrate   = 0;
 	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN - 1);
 	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN - 1);
@@ -901,6 +909,17 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 //	ioctl(serial, TIOCGSERIAL, &ser_info);
 //	ser_info.flags |= ASYNC_LOW_LATENCY;
 //	ioctl(serial, TIOCSSERIAL, &ser_info);
+
+	if (arguments.customrate)
+	{
+		struct termios2 term2;
+		ioctl(serial, TCGETS2, &term2);
+		term2.c_cflag &= ~CBAUD;
+		term2.c_cflag |= BOTHER;
+		term2.c_ispeed = arguments.customrate;
+		term2.c_ospeed = arguments.customrate;
+		ioctl(serial, TCSETS2, &term2);
+	}
 
 	if (arguments.printonly)
 	{
