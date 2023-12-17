@@ -470,21 +470,26 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 {
 	snd_seq_event_t* ev;
-	unsigned char bytes[] = {0x00, 0x00, 0xFF};  // *new*
-	unsigned char sysex_data[256];  // *new*
-	int sysex_len = 0;  // *new*
+	unsigned char bytes[3];  // *new*
+	unsigned char *sysex_data = NULL;  // *new*
+	int bytes_len;  // *new*
+	int sysex_len;  // *new*
 
 	do
 	{
 		snd_seq_event_input(seq_handle, &ev);
 
+		bytes_len = 0;
+		sysex_len = 0;
+
 		switch (ev->type)
 		{
 
 			case SND_SEQ_EVENT_NOTEOFF:
-				bytes[0] = 0x80 + ev->data.control.channel;
+				bytes[0] = 0x80 + ev->data.note.channel;
 				bytes[1] = ev->data.note.note;
 				bytes[2] = ev->data.note.velocity;
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Note off           %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
@@ -492,9 +497,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				break;
 
 			case SND_SEQ_EVENT_NOTEON:
-				bytes[0] = 0x90 + ev->data.control.channel;
+				bytes[0] = 0x90 + ev->data.note.channel;
 				bytes[1] = ev->data.note.note;
 				bytes[2] = ev->data.note.velocity;
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Note on            %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
@@ -502,9 +508,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				break;
 
 			case SND_SEQ_EVENT_KEYPRESS:
-				bytes[0] = 0xA0 + ev->data.control.channel;  // *new* was 90 in original code
+				bytes[0] = 0xA0 + ev->data.note.channel;  // *new* was 90 in original code
 				bytes[1] = ev->data.note.note;
 				bytes[2] = ev->data.note.velocity;
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Pressure change    %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
@@ -515,6 +522,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xB0 + ev->data.control.channel;
 				bytes[1] = ev->data.control.param;
 				bytes[2] = ev->data.control.value;
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Controller change  %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
@@ -524,8 +532,9 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 			case SND_SEQ_EVENT_PGMCHANGE:
 				bytes[0] = 0xC0 + ev->data.control.channel;
 				bytes[1] = ev->data.control.value;
+				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Program change     %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa    %02X Program change     %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -533,8 +542,9 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 			case SND_SEQ_EVENT_CHANPRESS:
 				bytes[0] = 0xD0 + ev->data.control.channel;
 				bytes[1] = ev->data.control.value;
+				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Channel press      %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa    %02X Channel press      %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -544,6 +554,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				ev->data.control.value += 8192;
 				bytes[1] = (unsigned char)(ev->data.control.value & 0x7F);  // *new*
 				bytes[2] = (unsigned char)(ev->data.control.value >> 7);  // *new*
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Pitch bend         %02X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.value);
 					fflush(stdout);  // *new*
@@ -552,15 +563,14 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_SYSEX:  // *new*
 				sysex_len = ev->data.ext.len;
-				if (!arguments.silent && arguments.verbose) printf("Alsa    F0 Sysex len = %04X   ", sysex_len);
-				int i;
-				for (i=0; i<sysex_len; i++) {
-					unsigned char* valPtr = (unsigned char*)ev->data.ext.ptr;  // *new*
-					unsigned char val = valPtr[i];  // *new*
-					if (!arguments.silent && arguments.verbose) printf("%02X ", val);  // *new* unsigned char cast suppressed
-					sysex_data[i] = val & 0xFF;  // *new* &0xFF (protection ?)
-				}
-				if (!arguments.silent && arguments.verbose) {
+				sysex_data = (unsigned char*)ev->data.ext.ptr;
+				if (!arguments.silent && arguments.verbose)
+				{
+					printf("Alsa    F0 Sysex len = %04X   ", sysex_len);
+					int i;
+					for (i=0; i<sysex_len; i++) {
+						printf("%02X ", sysex_data[i]);  // *new* unsigned char cast suppressed
+					}
 					printf("\n");  // *new*
 					fflush(stdout);  // *new*
 				}
@@ -569,6 +579,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 			case SND_SEQ_EVENT_QFRAME:
 				bytes[0] = 0xF1;
 				bytes[1] = ev->data.control.value;
+				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X MTC Quarter Frame      %02X\n", bytes[0], bytes[1]);
 					fflush(stdout);  // *new*
@@ -580,6 +591,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				ev->data.control.value += 8192;
 				bytes[1] = (unsigned char)(ev->data.control.value & 0x7F);
 				bytes[2] = (unsigned char)(ev->data.control.value >> 7);
+				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Song Position      %04X\n", bytes[0], ev->data.control.value);
 					fflush(stdout);  // *new*
@@ -589,6 +601,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 			case SND_SEQ_EVENT_SONGSEL:
 				bytes[0] = 0xF3;
 				bytes[1] = ev->data.control.value;
+				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Song Select        %02X\n", bytes[0], bytes[1]);
 					fflush(stdout);  // *new*
@@ -597,6 +610,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_TUNE_REQUEST:
 				bytes[0] = 0xF6;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Tune Request\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -605,6 +619,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_CLOCK:
 				bytes[0] = 0xF8;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Clock\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -613,6 +628,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_START:
 				bytes[0] = 0xFA;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Start\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -621,6 +637,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_CONTINUE:
 				bytes[0] = 0xFB;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Continue\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -629,6 +646,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_STOP:
 				bytes[0] = 0xFC;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Stop\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -637,6 +655,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_SENSING:
 				bytes[0] = 0xFE;
+				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Active Sense\n", bytes[0]);
 					fflush(stdout);  // *new*
@@ -659,19 +678,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 		if (sysex_len > 0) {
 			write(serial, sysex_data, sysex_len);
 			tcdrain(serial);  // *new* (speed up ?)
-		} else {
-			if (bytes[0]!=0x00)
-			{
-				bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
-				if (bytes[2]==0xFF || bytes[0]==0xF1 || bytes[0]==0xF3 || bytes[0]==0xF5)
-					write(serial, bytes, 2);
-				else if (bytes[0]==0xF4 || bytes[0]==0xF6 || bytes[0]>=0xF8) {
-					write(serial, bytes, 1);
-				} else {
-					bytes[2] = (bytes[2] & 0x7F);
-					write(serial, bytes, 3);
-				}
-			}
+		} else if (bytes_len > 0) {
+			bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
+			bytes[2] = (bytes[2] & 0x7F);
+			write(serial, bytes, bytes_len);
 		}
 
 		snd_seq_free_event(ev);
