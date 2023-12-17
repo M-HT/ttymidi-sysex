@@ -84,6 +84,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
+#include <poll.h>
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
@@ -99,7 +100,6 @@
 #define TRUE                1
 
 #define MAX_DEV_STR_LEN    32
-#define MAX_MSG_SIZE     1024
 #define BUF_SIZE         1024  // Size of the serial midi buffer - determines the maximum size of sysex messages *new*
 
 /* change this definition for the correct port */
@@ -286,6 +286,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 	snd_seq_ev_set_direct(&ev);
 	snd_seq_ev_set_source(&ev, port_out_id);
 	snd_seq_ev_set_subs(&ev);
+	ev.type = SND_SEQ_EVENT_NONE;
 
 	unsigned char operation, channel, param1, param2;  // *new* was int in original code
 	int int_param1;  // *new*
@@ -356,6 +357,10 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0xF0:  // *new*
 			switch (channel) {
+				case 0x7: // Split Sysex
+					buf++;
+					buflen--;
+					// fallthrough
 				case 0x0:
 					if (!arguments.silent && arguments.verbose) {
 						printf("Serial  %02X Sysex len = %04X   ", operation, buflen);  // *new*
@@ -397,6 +402,12 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					ev.data.control.value = param1;
 					ev.type = SND_SEQ_EVENT_SONGSEL;
 					break;
+				case 0x5: // Port Select (non-standard)
+					if (!arguments.silent) {
+						printf("Serial  Port Select             %02x (unsupported)\n", param1);
+						fflush(stdout);  // *new*
+					}
+					break;
 				case 0x6: // Tune Request
 					if (!arguments.silent && arguments.verbose) {
 						printf("Serial  Tune Request\n");
@@ -412,6 +423,14 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					}
 					snd_seq_ev_set_fixed(&ev);
 					ev.type = SND_SEQ_EVENT_CLOCK;
+					break;
+				case 0x9: // Tick
+					if (!arguments.silent && arguments.verbose) {
+						printf("Serial  Tick\n");
+						fflush(stdout);  // *new*
+					}
+					snd_seq_ev_set_fixed(&ev);
+					ev.type = SND_SEQ_EVENT_TICK;
 					break;
 				case 0xA: // Start
 					if (!arguments.silent && arguments.verbose) {
@@ -444,6 +463,14 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					}
 					snd_seq_ev_set_fixed(&ev);
 					ev.type = SND_SEQ_EVENT_SENSING;
+					break;
+				case 0xF: // Reset
+					if (!arguments.silent && arguments.verbose) {
+						printf("Serial  Reset\n");
+						fflush(stdout);  // *new*
+					}
+					snd_seq_ev_set_fixed(&ev);
+					ev.type = SND_SEQ_EVENT_RESET;
 					break;
 
 				default:
@@ -683,6 +710,15 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				}
 				break;
 
+			case SND_SEQ_EVENT_TICK:
+				bytes[0] = 0xF9;
+				bytes_len = 1;
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X Tick\n", bytes[0]);
+					fflush(stdout);  // *new*
+				}
+				break;
+
 			case SND_SEQ_EVENT_START:
 				bytes[0] = 0xFA;
 				bytes_len = 1;
@@ -715,6 +751,15 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Active Sense\n", bytes[0]);
+					fflush(stdout);  // *new*
+				}
+				break;
+
+			case SND_SEQ_EVENT_RESET:
+				bytes[0] = 0xFF;
+				bytes_len = 1;
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X Reset\n", bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -787,24 +832,21 @@ void* read_midi_from_alsa(void* seq)
 
 void* read_midi_from_serial_port(void* seq)
 {
-	unsigned char buf[BUF_SIZE], msg[MAX_MSG_SIZE];  // *new*
-	int i, msglen, bytesleft;  // *new* (buflen in JW's code not used)
+	unsigned char buf[BUF_SIZE], running_status;  // *new*
+	int i, bytesleft;  // *new* (buflen in JW's code not used)
 	struct timespec u10ms;
+	struct pollfd fds;
 
 	/* set-up a small sleep in case fo error to avoid cpu hungry loops */
 	u10ms.tv_sec  = 0;
 	u10ms.tv_nsec = 10000000L;
 
-	/* Lets first fast forward to first status byte... */
-	if (!arguments.printonly) {
-		do {
-			int ret = read(serial, buf, 1);
-			if (!run) break;
-			if (ret == 0) { nanosleep(&u10ms, NULL); continue; }
-			buf[0] = buf[0] & 0xFF;  // *new* &0xFF (protection ?)
-		}
-		while (buf[0] >> 7 == 0);
-	}
+	fds.fd = serial;
+	fds.events = POLLIN;
+
+	running_status = 0;
+	buf[0] = 0;
+	i = 1;
 
 	while (run)
 	{
@@ -825,84 +867,128 @@ void* read_midi_from_serial_port(void* seq)
 		 * so let's align to the beginning of a midi command.
 		 */
 
+		if ((running_status == 0) && ((buf[0] == 0xF0) || (buf[0] == 0xF7)) && (buf[i-1] != 0xF7))
+		{
+			/* Split Sysex */
+			buf[0] = 0xF7;
+		}
+		else
+		{
+			buf[0] = running_status;
+		}
 		// int i = 1; *new*
 		i = 1;  // *new* (i already declared at function start)
-		bytesleft = BUF_SIZE - 1;  // *new*
+		bytesleft = (running_status) ? (((running_status & 0xF0) == 0xC0 || (running_status & 0xF0) == 0xD0) ? 2 : 3) : BUF_SIZE;  // *new*
 
-		while (i < bytesleft) {  // *new*
-			int ret = read(serial, buf+i, 1);
-			if (ret==0) {
+		while (run && i < bytesleft) {  // *new*
+			int ret = poll(&fds, 1, 1000);
+			if (ret == 0) continue; // timeout
+			if (ret > 0) {
+				ret = read(serial, buf+i, 1);
+			}
+			if (ret <= 0) {
 				/* serial error somewhere */
 				printf("SerialIn error %02X %d %d\n", buf[0], ret, errno);
 				nanosleep(&u10ms, NULL);
-				bytesleft = 0;
-				break;
+				continue;
 			}
 			buf[i] = buf[i] & 0xFF;  // *new* &0xFF (protection ?)
 
-			if (buf[i] >> 7 != 0) {
+			if (buf[i] & 0x80) {
 				/* Status byte received and will always be first bit!*/
-				if(buf[i] == 0xF7 && buf[0] == 0xF0)	//if end of SysEx message has been reached *new*
+				switch(buf[i] & 0xF0)
 				{
-					i++;  // *new* (added wrt EB's code)
-					break;
-				}
-				buf[0] = buf[i];
-				if (buf[0] == 0xF1 || buf[0] == 0xF3 || buf[0] == 0xF5)
-					bytesleft = 1;
-				else if (buf[0] >= 0xF4 || buf[0] >= 0xF6 || (buf[0] >= 0xF8 && buf[0] <= 0xFE))
-					bytesleft = 0;
-				else if (buf[0] != 0xF0)	//if not SysEx *new*
-					bytesleft = 3;
-				i = 1;
-			} else {
-				if(buf[0] == 0xF0)	//if SysEx *new*
-				{
-					i++;
-				}
-				else
-				{
-					/* Data byte received */
-					if (i == 2) {
-						/* It was 2nd data byte so we have a MIDI event
-						   process! */
-						i = 3;
-					} else {
-						/* Lets figure out are we done or should we read one more byte. */
-						if ((buf[0] & 0xF0) == 0xC0 || (buf[0] & 0xF0) == 0xD0) {
-							i = 3;
-						} else {
-							i = 2;
+					case 0x80: // Note off
+					case 0x90: // Note on
+					case 0xA0: // Pressure change
+					case 0xB0: // Controller change
+					case 0xE0: // Pitch bend
+						running_status = buf[0] = buf[i];
+						i = 1;
+						bytesleft = 3;
+						break;
+					case 0xC0: // Program change
+					case 0xD0: // Channel press
+						running_status = buf[0] = buf[i];
+						i = 1;
+						bytesleft = 2;
+						break;
+					case 0xF0:
+						/* System Common / RealTime messages */
+						switch (buf[i] & 0x0F)
+						{
+							case 0x0: // Sysex start
+								running_status = 0;
+								buf[0] = buf[i];
+								i = 1;
+								bytesleft = BUF_SIZE;
+								break;
+							case 0x1: // MTC Quarter Frame package
+							case 0x3: // Song Select
+							case 0x4: // Undefined/Unknown
+							case 0x5: // Port Select (non-standard)
+								running_status = 0;
+								buf[0] = buf[i];
+								i = 1;
+								bytesleft = 2;
+								break;
+							case 0x2: // Song Position
+								running_status = 0;
+								buf[0] = buf[i];
+								i = 1;
+								bytesleft = 3;
+								break;
+							case 0x6: // Tune Request
+								running_status = 0;
+								buf[0] = buf[i];
+								i = 1;
+								bytesleft = 1;
+								break;
+							case 0x7: // Sysex end
+								running_status = 0;
+								if ((buf[0] == 0xF0) || (buf[0] == 0xF7))
+								{
+									i++;
+									bytesleft = i;
+								}
+								else
+								{
+									buf[0] = 0;
+									i = 0;
+									bytesleft = BUF_SIZE;
+								}
+								break;
+							case 0x8: // Clock
+							case 0x9: // Tick
+							case 0xA: // Start
+							case 0xB: // Continue
+							case 0xC: // Stop
+							case 0xD: // Undefined/Unknown
+							case 0xE: // Active sense
+							case 0xF: // Reset
+								/* RealTime messages */
+								buf[0] = buf[i];
+								i = 1;
+								bytesleft = 1;
+								break;
 						}
-					}
+						break;
 				}
+			} else {
+				/* Data byte received */
+				if(buf[0] == 0)	// no status *new*
+				{
+					continue;
+				}
+				i++;
 			}
 
 		}
 
-		/* print text comment message (the ones that start with 0xFF 0x00 0x00 */
-		if ((buf[0] == 0xFF) && (buf[1] == 0x00) && (buf[2] == 0x00))  // *new* removed (char) casts
-		{
-			read(serial, buf, 1);
-			buf[0] = buf[0] & 0xFF;  // *new* &0xFF (protection ?)
-			msglen = buf[0];
-			if (msglen > MAX_MSG_SIZE-1) msglen = MAX_MSG_SIZE-1;
-
-			read(serial, msg, msglen);
-
-			if (arguments.silent) continue;
-
-			/* make sure the string ends with a null character */
-			msg[msglen] = 0;
-
-			printf("Serial  FF Text len = %04X    %s\n", msglen, msg);  // *new*
-			fflush(stdout);
-		}
+		if (!run) break;
 
 		/* parse MIDI message */
-		else {
-			parse_midi_command(seq, port_out_id, buf, i);  // *new* (was i+1 in EB's code)
-		}
+		parse_midi_command(seq, port_out_id, buf, i);  // *new* (was i+1 in EB's code)
 	}
 
 	return NULL;
@@ -1042,9 +1128,8 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	{
 		pthread_join(midi_out_thread, &status);
 	}
-	if (iret2 == 0)
+	if ((iret2 == 0) && !arguments.printonly)
 	{
-		pthread_kill(midi_in_thread, SIGINT);
 		pthread_join(midi_in_thread, &status);
 	}
 
