@@ -470,7 +470,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 {
 	snd_seq_event_t* ev;
-	unsigned char bytes[3];  // *new*
+	unsigned char bytes[9];  // *new*
 	unsigned char *sysex_data = NULL;  // *new*
 	int bytes_len;  // *new*
 	int sysex_len;  // *new*
@@ -525,6 +525,63 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa    %02X Controller change  %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					fflush(stdout);  // *new*
+				}
+				break;
+
+			case SND_SEQ_EVENT_CONTROL14:
+				bytes[0] = 0xB0 + ev->data.control.channel;
+				bytes[1] = ev->data.control.param;
+				bytes[2] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
+				bytes[3] = ev->data.control.param + 32;
+				bytes[4] = (unsigned char)(ev->data.control.value & 0x7F);
+				if (ev->data.control.param >= 0 && ev->data.control.param < 32)
+				{
+					bytes_len = 5;
+					if (!arguments.silent && arguments.verbose) {
+						printf("Alsa    %02X 14 bit Controller  %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+						fflush(stdout);  // *new*
+					}
+				}
+				else
+				{
+					if (!arguments.silent) {  // *new*
+						printf("Alsa    %02X Unknown Controller %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+						fflush(stdout);  // *new*
+					}
+				}
+				break;
+
+			case SND_SEQ_EVENT_NONREGPARAM:
+				bytes[0] = 0xB0 + ev->data.control.channel;
+				bytes[1] = 0x63; // NRPN MSB
+				bytes[2] = (unsigned char)((ev->data.control.param >> 7) & 0x7F);
+				bytes[3] = 0x62; // NRPN LSB
+				bytes[4] = (unsigned char)(ev->data.control.param & 0x7F);
+				bytes[5] = 0x06; // data entry MSB
+				bytes[6] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
+				bytes[7] = 0x26; // data entry LSB
+				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes_len = 9;
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X 14 bit NRPN        %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+					fflush(stdout);  // *new*
+				}
+				break;
+
+			case SND_SEQ_EVENT_REGPARAM:
+				bytes[0] = 0xB0 + ev->data.control.channel;
+				bytes[1] = 0x65; // RPN MSB
+				bytes[2] = (unsigned char)((ev->data.control.param >> 7) & 0x7F);
+				bytes[3] = 0x64; // RPN LSB
+				bytes[4] = (unsigned char)(ev->data.control.param & 0x7F);
+				bytes[5] = 0x06; // data entry MSB
+				bytes[6] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
+				bytes[7] = 0x26; // data entry LSB
+				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes_len = 9;
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X 14 bit RPN         %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -662,9 +719,23 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				}
 				break;
 
+			case SND_SEQ_EVENT_PORT_SUBSCRIBED:
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X Port connected     %i:%i -> %i:%i\n", bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
+					fflush(stdout);  // *new*
+				}
+				break;
+
+			case SND_SEQ_EVENT_PORT_UNSUBSCRIBED:
+				if (!arguments.silent && arguments.verbose) {
+					printf("Alsa    %02X Port disconnected  %i:%i -> %i:%i\n", bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
+					fflush(stdout);  // *new*
+				}
+				break;
+
 			default:
 				if (!arguments.silent) {  // *new*
-					printf("Alsa    %02X Unknown MIDI cmd   %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0x0F, bytes[1], bytes[2]);  // *new*
+					printf("Alsa    %02X Unknown MIDI cmd   %02X\n", 0, ev->type);  // *new*
 					fflush(stdout);  // *new*
 				}
 				break;
