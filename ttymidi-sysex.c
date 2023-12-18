@@ -958,6 +958,8 @@ void* read_midi_from_serial_port(void* seq)
 									bytesleft = BUF_SIZE;
 								}
 								break;
+
+							/* RealTime messages */
 							case 0x8: // Clock
 							case 0x9: // Tick
 							case 0xA: // Start
@@ -966,10 +968,9 @@ void* read_midi_from_serial_port(void* seq)
 							case 0xD: // Undefined/Unknown
 							case 0xE: // Active sense
 							case 0xF: // Reset
-								/* RealTime messages */
-								buf[0] = buf[i];
-								i = 1;
-								bytesleft = 1;
+								/* RealTime message can arrive in the middle of another message */
+								/* Process it immediately and continue reading the original message */
+								parse_midi_command(seq, port_out_id, buf+i, 1);
 								break;
 						}
 						break;
