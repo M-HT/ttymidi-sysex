@@ -108,6 +108,7 @@
 int run;
 int serial;
 int port_out_id;
+unsigned char running_status_out;
 
 /* --------------------------------------------------------------------- */
 // Program options
@@ -792,12 +793,27 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 */
 		// *new* sysex addition
 		if (sysex_len > 0) {
+			running_status_out = 0;
 			write(serial, sysex_data, sysex_len);
 			tcdrain(serial);  // *new* (speed up ?)
 		} else if (bytes_len > 0) {
 			bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
 			bytes[2] = (bytes[2] & 0x7F);
-			write(serial, bytes, bytes_len);
+			if (bytes[0] >= 0xF8) {
+				/* RealTime messages */
+				write(serial, bytes, bytes_len);
+			} else if (bytes[0] >= 0xF0) {
+				/* System Common messages */
+				running_status_out = 0;
+				write(serial, bytes, bytes_len);
+			} else if (bytes[0] == running_status_out) {
+				/* Don't send running status byte */
+				write(serial, bytes+1, bytes_len-1);
+			} else {
+				/* Update running status */
+				running_status_out = bytes[0];
+				write(serial, bytes, bytes_len);
+			}
 		}
 
 		snd_seq_free_event(ev);
@@ -817,6 +833,8 @@ void* read_midi_from_alsa(void* seq)
 	pfd = (struct pollfd*) alloca(npfd * sizeof(struct pollfd));
 	snd_seq_poll_descriptors(seq_handle, pfd, npfd, POLLIN);
 
+	running_status_out = 0;
+
 	while (run)
 	{
 		if (poll(pfd,npfd, 100) > 0)
@@ -832,7 +850,7 @@ void* read_midi_from_alsa(void* seq)
 
 void* read_midi_from_serial_port(void* seq)
 {
-	unsigned char buf[BUF_SIZE], running_status;  // *new*
+	unsigned char buf[BUF_SIZE], running_status_in;  // *new*
 	int i, bytesleft;  // *new* (buflen in JW's code not used)
 	struct timespec u10ms;
 	struct pollfd fds;
@@ -844,7 +862,7 @@ void* read_midi_from_serial_port(void* seq)
 	fds.fd = serial;
 	fds.events = POLLIN;
 
-	running_status = 0;
+	running_status_in = 0;
 	buf[0] = 0;
 	i = 1;
 
@@ -867,18 +885,18 @@ void* read_midi_from_serial_port(void* seq)
 		 * so let's align to the beginning of a midi command.
 		 */
 
-		if ((running_status == 0) && ((buf[0] == 0xF0) || (buf[0] == 0xF7)) && (buf[i-1] != 0xF7))
+		if ((running_status_in == 0) && ((buf[0] == 0xF0) || (buf[0] == 0xF7)) && (buf[i-1] != 0xF7))
 		{
 			/* Split Sysex */
 			buf[0] = 0xF7;
 		}
 		else
 		{
-			buf[0] = running_status;
+			buf[0] = running_status_in;
 		}
 		// int i = 1; *new*
 		i = 1;  // *new* (i already declared at function start)
-		bytesleft = (running_status) ? (((running_status & 0xF0) == 0xC0 || (running_status & 0xF0) == 0xD0) ? 2 : 3) : BUF_SIZE;  // *new*
+		bytesleft = (running_status_in) ? (((running_status_in & 0xF0) == 0xC0 || (running_status_in & 0xF0) == 0xD0) ? 2 : 3) : BUF_SIZE;  // *new*
 
 		while (run && i < bytesleft) {  // *new*
 			int ret = poll(&fds, 1, 1000);
@@ -903,13 +921,13 @@ void* read_midi_from_serial_port(void* seq)
 					case 0xA0: // Pressure change
 					case 0xB0: // Controller change
 					case 0xE0: // Pitch bend
-						running_status = buf[0] = buf[i];
+						running_status_in = buf[0] = buf[i];
 						i = 1;
 						bytesleft = 3;
 						break;
 					case 0xC0: // Program change
 					case 0xD0: // Channel press
-						running_status = buf[0] = buf[i];
+						running_status_in = buf[0] = buf[i];
 						i = 1;
 						bytesleft = 2;
 						break;
@@ -918,7 +936,7 @@ void* read_midi_from_serial_port(void* seq)
 						switch (buf[i] & 0x0F)
 						{
 							case 0x0: // Sysex start
-								running_status = 0;
+								running_status_in = 0;
 								buf[0] = buf[i];
 								i = 1;
 								bytesleft = BUF_SIZE;
@@ -927,25 +945,25 @@ void* read_midi_from_serial_port(void* seq)
 							case 0x3: // Song Select
 							case 0x4: // Undefined/Unknown
 							case 0x5: // Port Select (non-standard)
-								running_status = 0;
+								running_status_in = 0;
 								buf[0] = buf[i];
 								i = 1;
 								bytesleft = 2;
 								break;
 							case 0x2: // Song Position
-								running_status = 0;
+								running_status_in = 0;
 								buf[0] = buf[i];
 								i = 1;
 								bytesleft = 3;
 								break;
 							case 0x6: // Tune Request
-								running_status = 0;
+								running_status_in = 0;
 								buf[0] = buf[i];
 								i = 1;
 								bytesleft = 1;
 								break;
 							case 0x7: // Sysex end
-								running_status = 0;
+								running_status_in = 0;
 								if ((buf[0] == 0xF0) || (buf[0] == 0xF7))
 								{
 									i++;
