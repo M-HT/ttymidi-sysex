@@ -404,10 +404,12 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					ev.type = SND_SEQ_EVENT_SONGSEL;
 					break;
 				case 0x5: // Port Select (non-standard)
-					if (!arguments.silent) {
-						printf("Serial  Port Select             %02x (unsupported)\n", param1);
+					if (!arguments.silent && arguments.verbose) {
+						printf("Serial  Port Select             %02x\n", param1);
 						fflush(stdout);  // *new*
 					}
+					// Send port selection as sysex message
+					snd_seq_ev_set_sysex(&ev, buflen, buf);
 					break;
 				case 0x6: // Tune Request
 					if (!arguments.silent && arguments.verbose) {
