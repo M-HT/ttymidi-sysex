@@ -498,10 +498,9 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 {
 	snd_seq_event_t* ev;
-	unsigned char bytes[9];  // *new*
+	unsigned char bytes[9], *bytes_data;  // *new*
 	unsigned char *sysex_data = NULL;  // *new*
-	int bytes_len;  // *new*
-	int sysex_len;  // *new*
+	int bytes_len, sysex_len, written;  // *new*
 
 	do
 	{
@@ -794,31 +793,62 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 		// *new* sysex addition
 		if (sysex_len > 0) {
 			running_status_out = 0;
-			write(serial, sysex_data, sysex_len);
-			tcdrain(serial);  // *new* (speed up ?)
+			while (run && sysex_len > 0) {
+				written = write(serial, sysex_data, sysex_len);
+				if (written < 0) {
+					if (errno != EINTR) {
+						if (!arguments.silent) {
+							printf("Alsa    Error sending data\n");
+							fflush(stdout);
+						}
+						break;
+					}
+				} else {
+					sysex_data += written;
+					sysex_len -= written;
+					tcdrain(serial);  // *new* (speed up ?)
+				}
+			}
 		} else if (bytes_len > 0) {
 			bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
 			bytes[2] = (bytes[2] & 0x7F);
 			if (bytes[0] >= 0xF8) {
 				/* RealTime messages */
-				write(serial, bytes, bytes_len);
+				bytes_data = bytes;
 			} else if (bytes[0] >= 0xF0) {
 				/* System Common messages */
 				running_status_out = 0;
-				write(serial, bytes, bytes_len);
+				bytes_data = bytes;
 			} else if (bytes[0] == running_status_out) {
 				/* Don't send running status byte */
-				write(serial, bytes+1, bytes_len-1);
+				bytes_data = bytes+1;
+				bytes_len--;
 			} else {
 				/* Update running status */
 				running_status_out = bytes[0];
-				write(serial, bytes, bytes_len);
+				bytes_data = bytes;
+			}
+			while (run && bytes_len > 0) {
+				written = write(serial, bytes_data, bytes_len);
+				if (written < 0) {
+					if (errno != EINTR) {
+						running_status_out = 0;
+						if (!arguments.silent) {
+							printf("Alsa    Error sending data\n");
+							fflush(stdout);
+						}
+						break;
+					}
+				} else {
+					bytes_data += written;
+					bytes_len -= written;
+				}
 			}
 		}
 
 		snd_seq_free_event(ev);
 
-	} while (snd_seq_event_input_pending(seq_handle, 0) > 0);
+	} while (run && snd_seq_event_input_pending(seq_handle, 0) > 0);
 }
 
 void* read_midi_from_alsa(void* seq)
