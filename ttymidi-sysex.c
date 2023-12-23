@@ -101,13 +101,14 @@
 
 #define MAX_DEV_STR_LEN    32
 #define BUF_SIZE         1024  // Size of the serial midi buffer - determines the maximum size of sysex messages *new*
+#define MAX_NUM_PORTS      16
 
 /* change this definition for the correct port */
 //#define _POSIX_SOURCE 1 /* POSIX compliant source */
 
 int run;
 int serial;
-int port_out_id;
+int port_id[MAX_NUM_PORTS], output_port_index, output_port_num, num_output_clients;
 unsigned char running_status_out;
 
 /* --------------------------------------------------------------------- */
@@ -120,13 +121,15 @@ static struct argp_option options[] =
 	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output" },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else" },
 	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent" },
-	{"name"		, 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi" },
+	{"name"         , 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi" },
+	{"inputs"       , 'i', "NUM" , 0, "Number of MIDI inputs. Default = 1" },
+	{"outputs"      , 'o', "NUM" , 0, "Number of MIDI outputs. Default = 1" },
 	{ 0 }
 };
 
 typedef struct _arguments
 {
-	int  silent, verbose, printonly;
+	int  silent, verbose, printonly, num_input_ports, num_output_ports;
 	char serialdevice[MAX_DEV_STR_LEN];
 	speed_t baudrate, customrate;
 	char name[MAX_DEV_STR_LEN];
@@ -143,7 +146,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 	/* Get the input argument from argp_parse, which we
 	   know is a pointer to our arguments structure. */
 	arguments_t *arguments = state->input;
-	int baud_temp;
+	int int_value;
 
 	switch (key)
 	{
@@ -166,9 +169,11 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 			break;
 		case 'b':
 			if (arg == NULL) break;
-			baud_temp = strtol(arg, NULL, 0);
-			if (baud_temp != EINVAL && baud_temp != ERANGE)
-				switch (baud_temp)
+			int_value = strtol(arg, NULL, 0);
+			if (int_value != EINVAL && int_value != ERANGE)
+			{
+				arguments->customrate = 0;
+				switch (int_value)
 				{
 					case 1200   : arguments->baudrate = B1200  ; break;
 					case 2400   : arguments->baudrate = B2400  ; break;
@@ -179,8 +184,30 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 					case 38400  : arguments->baudrate = B38400 ; break;
 					case 57600  : arguments->baudrate = B57600 ; break;
 					case 115200 : arguments->baudrate = B115200; break;
-					default: printf("Baud rate %i is not supported.\n",baud_temp); exit(1);
+					default: printf("Baud rate %i is not supported.\n",int_value); exit(1);
 				}
+			}
+			break;
+		case 'i':
+			if (arg == NULL) break;
+			int_value = strtol(arg, NULL, 0);
+			if (int_value != EINVAL && int_value != ERANGE)
+			{
+				if (int_value < 0) int_value = 0;
+				else if (int_value > MAX_NUM_PORTS) int_value = MAX_NUM_PORTS;
+				arguments->num_input_ports = int_value;
+			}
+			break;
+		case 'o':
+			if (arg == NULL) break;
+			int_value = strtol(arg, NULL, 0);
+			if (int_value != EINVAL && int_value != ERANGE)
+			{
+				if (int_value < 0) int_value = 0;
+				else if (int_value > MAX_NUM_PORTS) int_value = MAX_NUM_PORTS;
+				arguments->num_output_ports = int_value;
+			}
+			break;
 
 		case ARGP_KEY_ARG:
 		case ARGP_KEY_END:
@@ -196,11 +223,13 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 void arg_set_defaults(arguments_t *arguments)
 {
 	char *serialdevice_temp = "/dev/ttyUSB0";
-	arguments->printonly    = 0;
-	arguments->silent       = 0;
-	arguments->verbose      = 0;
-	arguments->baudrate     = B115200;
-	arguments->customrate   = 0;
+	arguments->printonly        = 0;
+	arguments->silent           = 0;
+	arguments->verbose          = 0;
+	arguments->num_input_ports  = 1;
+	arguments->num_output_ports = 1;
+	arguments->baudrate         = B115200;
+	arguments->customrate       = 0 ;
 	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN - 1);
 	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN - 1);
@@ -216,9 +245,10 @@ arguments_t arguments;
 /* --------------------------------------------------------------------- */
 // MIDI stuff
 
-int open_seq(snd_seq_t** seq)
+void open_seq(snd_seq_t** seq)
 {
-	int port_out_id, port_in_id; // actually port_in_id is not needed nor used anywhere
+	int index, num_ports;
+	char namePort[MAX_DEV_STR_LEN + 3];
 
 	if (snd_seq_open(seq, "default", SND_SEQ_OPEN_DUPLEX, 0) < 0)
 	{
@@ -228,32 +258,38 @@ int open_seq(snd_seq_t** seq)
 
 	snd_seq_set_client_name(*seq, arguments.name);
 
-	char nameInput[MAX_DEV_STR_LEN + 3];
-	strcpy(nameInput, arguments.name);
-	strcat(nameInput, " In");
-
-	if ((port_out_id = snd_seq_create_simple_port(*seq, nameInput,
-					SND_SEQ_PORT_CAP_READ|SND_SEQ_PORT_CAP_SUBS_READ,
-					SND_SEQ_PORT_TYPE_MIDI_GENERIC|SND_SEQ_PORT_TYPE_APPLICATION)) < 0)  // *new*
+	num_ports = (arguments.num_input_ports >= arguments.num_output_ports) ? arguments.num_input_ports : arguments.num_output_ports;
+	for (index = 0; index < num_ports; index++)
 	{
-		fprintf(stderr, "Error creating sequencer MIDI out port.\n");  // *new*
+		sprintf(namePort, "%s %i", arguments.name, index+1);
+
+		if ((port_id[index] = snd_seq_create_simple_port(*seq, namePort,
+						((index < arguments.num_input_ports) ? (SND_SEQ_PORT_CAP_READ|SND_SEQ_PORT_CAP_SUBS_READ) : 0) |
+						((index < arguments.num_output_ports) ? (SND_SEQ_PORT_CAP_WRITE|SND_SEQ_PORT_CAP_SUBS_WRITE) : 0),
+						SND_SEQ_PORT_TYPE_MIDI_GENERIC|SND_SEQ_PORT_TYPE_APPLICATION)) < 0)  // *new*
+		{
+			fprintf(stderr, "Error creating sequencer MIDI port.\n");  // *new*
+			if (index < arguments.num_input_ports) arguments.num_input_ports = index;
+			if (index < arguments.num_output_ports) arguments.num_output_ports = index;
+			break;
+		}
 	}
-
-	char nameOutput[MAX_DEV_STR_LEN + 4];
-	strcpy(nameOutput, arguments.name);
-	strcat(nameOutput, " Out");
-
-	if ((port_in_id = snd_seq_create_simple_port(*seq, nameOutput,
-					SND_SEQ_PORT_CAP_WRITE|SND_SEQ_PORT_CAP_SUBS_WRITE,
-					SND_SEQ_PORT_TYPE_MIDI_GENERIC|SND_SEQ_PORT_TYPE_APPLICATION)) < 0)  // *new*
-	{
-		fprintf(stderr, "Error creating sequencer MIDI in port.\n");  // *new*
-	}
-
-	return port_out_id;
 }
 
-void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int buflen)  // *new*
+void close_seq(snd_seq_t* seq)
+{
+	int index, num_ports;
+
+	num_ports = (arguments.num_input_ports >= arguments.num_output_ports) ? arguments.num_input_ports : arguments.num_output_ports;
+	for (index = num_ports - 1; index >= 0; index--)
+	{
+		snd_seq_delete_simple_port(seq, port_id[index]);
+	}
+
+	snd_seq_close(seq);
+}
+
+void parse_midi_command(snd_seq_t* seq, int port_out_id, int port_num, unsigned char *buf, int buflen)  // *new*
 {
 /*
 	MIDI COMMANDS
@@ -301,7 +337,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 	{
 		case 0x90:  // *new* handle noteon first to speed up the mostly used message
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Note on            %02X %02X %02X\n", operation, channel, param1, param2);
+				printf("Serial[%02x]  %02X Note on            %02X %02X %02X\n", port_num, operation, channel, param1, param2);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_noteon(&ev, channel, param1, param2);
@@ -309,7 +345,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0x80:
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Note off           %02X %02X %02X\n", operation, channel, param1, param2);
+				printf("Serial[%02x]  %02X Note off           %02X %02X %02X\n", port_num, operation, channel, param1, param2);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_noteoff(&ev, channel, param1, param2);
@@ -317,7 +353,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0xA0:
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Pressure change    %02X %02X %02X\n", operation, channel, param1, param2);
+				printf("Serial[%02x]  %02X Pressure change    %02X %02X %02X\n", port_num, operation, channel, param1, param2);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_keypress(&ev, channel, param1, param2);
@@ -325,7 +361,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0xB0:
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Controller change  %02X %02X %02X\n", operation, channel, param1, param2);
+				printf("Serial[%02x]  %02X Controller change  %02X %02X %02X\n", port_num, operation, channel, param1, param2);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_controller(&ev, channel, param1, param2);
@@ -333,7 +369,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0xC0:
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Program change     %02X %02X\n", operation, channel, param1);
+				printf("Serial[%02x]  %02X Program change     %02X %02X\n", port_num, operation, channel, param1);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_pgmchange(&ev, channel, param1);
@@ -341,7 +377,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		case 0xD0:
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Channel press      %02X %02X\n", operation, channel, param1);
+				printf("Serial[%02x]  %02X Channel press      %02X %02X\n", port_num, operation, channel, param1);
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_chanpress(&ev, channel, param1);
@@ -350,7 +386,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 		case 0xE0:
 			int_param1 = (int) (param1 & 0x7F) + ((param2 & 0x7F) << 7);  // *new*
 			if (!arguments.silent && arguments.verbose) {
-				printf("Serial  %02X Pitch bend         %02X %04X\n", operation, channel, int_param1);  // *new*
+				printf("Serial[%02x]  %02X Pitch bend         %02X %04X\n", port_num, operation, channel, int_param1);  // *new*
 				fflush(stdout);  // *new*
 			}
 			snd_seq_ev_set_pitchbend(&ev, channel, int_param1 - 8192); // in alsa MIDI we want signed int *new*
@@ -364,7 +400,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					// fallthrough
 				case 0x0:
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  %02X Sysex len = %04X   ", operation, buflen);  // *new*
+						printf("Serial[%02x]  %02X Sysex len = %04X   ", port_num, operation, buflen);  // *new*
 						int i;
 						for (i=0; i < buflen; i++) {
 							printf("%02X ", buf[i]);
@@ -377,7 +413,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x1: // MTC Quarter Frame package
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  MTC Quarter Frame       %02x\n", param1);
+						printf("Serial[%02x]  MTC Quarter Frame       %02x\n", port_num, param1);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -387,7 +423,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 				case 0x2: // Song Position
 					int_param1 = (int) (param1 & 0x7F) + ((param2 & 0x7F) << 7);  // *new*
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Song Position           %04x\n", int_param1);
+						printf("Serial[%02x]  Song Position           %04x\n", port_num, int_param1);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -396,7 +432,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x3: // Song Select
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Song Select             %02x\n", param1);
+						printf("Serial[%02x]  Song Select             %02x\n", port_num, param1);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -405,7 +441,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x5: // Port Select (non-standard)
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Port Select             %02x\n", param1);
+						printf("Serial[%02x]  Port Select             %02x\n", port_num, param1);
 						fflush(stdout);  // *new*
 					}
 					// Send port selection as sysex message
@@ -413,7 +449,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x6: // Tune Request
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Tune Request\n");
+						printf("Serial[%02x]  Tune Request\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -421,7 +457,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x8: // Clock
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Clock\n");
+						printf("Serial[%02x]  Clock\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -429,7 +465,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0x9: // Tick
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Tick\n");
+						printf("Serial[%02x]  Tick\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -437,7 +473,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0xA: // Start
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Start\n");
+						printf("Serial[%02x]  Start\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -445,7 +481,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0xB: // Continue
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Continue\n");
+						printf("Serial[%02x]  Continue\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -453,7 +489,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0xC: // Stop
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Stop\n");
+						printf("Serial[%02x]  Stop\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -461,7 +497,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0xE: // Active sense
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Active sense\n");
+						printf("Serial[%02x]  Active sense\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -469,7 +505,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 					break;
 				case 0xF: // Reset
 					if (!arguments.silent && arguments.verbose) {
-						printf("Serial  Reset\n");
+						printf("Serial[%02x]  Reset\n", port_num);
 						fflush(stdout);  // *new*
 					}
 					snd_seq_ev_set_fixed(&ev);
@@ -478,7 +514,7 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 				default:
 					if (!arguments.silent) {  // *new*
-						printf("Serial  %02X Unknown MIDI System cmd\n", buf[0] & 0xFF);  // *new*
+						printf("Serial[%02x]  %02X Unknown MIDI System cmd\n", port_num, buf[0] & 0xFF);  // *new*
 						fflush(stdout);  // *new*
 					}
 					break;
@@ -487,14 +523,38 @@ void parse_midi_command(snd_seq_t* seq, int port_out_id, unsigned char *buf, int
 
 		default:
 			if (!arguments.silent) {  // *new*
-				printf("Serial  %02X Unknown MIDI cmd   %02X %02X %02X\n", operation, channel, param1, param2);  // *new*
+				printf("Serial[%02x]  %02X Unknown MIDI cmd   %02X %02X %02X\n", port_num, operation, channel, param1, param2);  // *new*
 				fflush(stdout);  // *new*
 			}
 			break;
 	}
 
-	snd_seq_event_output_direct(seq, &ev);
-	snd_seq_drain_output(seq);
+	if (port_out_id >= 0) {
+		snd_seq_event_output_direct(seq, &ev);
+		snd_seq_drain_output(seq);
+	}
+}
+
+void write_bytes_to_serial_port(unsigned char *bytes_data, int bytes_len)
+{
+	int written;
+
+	while (run && bytes_len > 0) {
+		written = write(serial, bytes_data, bytes_len);
+		if (written < 0) {
+			if (errno != EINTR) {
+				running_status_out = 0;
+				if (!arguments.silent) {
+					printf("Alsa    Error sending data\n");
+					fflush(stdout);
+				}
+				break;
+			}
+		} else {
+			bytes_data += written;
+			bytes_len -= written;
+		}
+	}
 }
 
 void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
@@ -502,7 +562,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 	snd_seq_event_t* ev;
 	unsigned char bytes[9], *bytes_data;  // *new*
 	unsigned char *sysex_data = NULL;  // *new*
-	int bytes_len, sysex_len, written;  // *new*
+	int bytes_len, sysex_len, ev_port_index, ev_port_num;  // *new*
 
 	do
 	{
@@ -510,6 +570,9 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 		bytes_len = 0;
 		sysex_len = 0;
+
+		ev_port_index = ev->dest.port;
+		ev_port_num = (arguments.num_output_ports == 1) ? output_port_num : ev_port_index + 1;
 
 		switch (ev->type)
 		{
@@ -520,7 +583,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = ev->data.note.velocity;
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Note off           %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa[%02x]    %02X Note off           %02X %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -531,7 +594,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = ev->data.note.velocity;
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Note on            %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa[%02x]    %02X Note on            %02X %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -542,7 +605,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = ev->data.note.velocity;
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Pressure change    %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa[%02x]    %02X Pressure change    %02X %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -553,7 +616,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = ev->data.control.value;
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Controller change  %02X %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
+					printf("Alsa[%02x]    %02X Controller change  %02X %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -568,14 +631,14 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				{
 					bytes_len = 5;
 					if (!arguments.silent && arguments.verbose) {
-						printf("Alsa    %02X 14 bit Controller  %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+						printf("Alsa[%02x]    %02X 14 bit Controller  %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
 						fflush(stdout);  // *new*
 					}
 				}
 				else
 				{
 					if (!arguments.silent) {  // *new*
-						printf("Alsa    %02X Unknown Controller %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+						printf("Alsa[%02x]    %02X Unknown Controller %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
 						fflush(stdout);  // *new*
 					}
 				}
@@ -593,7 +656,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
 				bytes_len = 9;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X 14 bit NRPN        %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+					printf("Alsa[%02x]    %02X 14 bit NRPN        %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -610,7 +673,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
 				bytes_len = 9;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X 14 bit RPN         %02X %04X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
+					printf("Alsa[%02x]    %02X 14 bit RPN         %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -620,7 +683,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[1] = ev->data.control.value;
 				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Program change     %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
+					printf("Alsa[%02x]    %02X Program change     %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -630,7 +693,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[1] = ev->data.control.value;
 				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Channel press      %02X %02X\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
+					printf("Alsa[%02x]    %02X Channel press      %02X %02X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -642,7 +705,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = (unsigned char)(ev->data.control.value >> 7);  // *new*
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Pitch bend         %02X %04X\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.value);
+					printf("Alsa[%02x]    %02X Pitch bend         %02X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.value);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -650,15 +713,35 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 			case SND_SEQ_EVENT_SYSEX:  // *new*
 				sysex_len = ev->data.ext.len;
 				sysex_data = (unsigned char*)ev->data.ext.ptr;
-				if (!arguments.silent && arguments.verbose)
-				{
-					printf("Alsa    F0 Sysex len = %04X   ", sysex_len);
-					int i;
-					for (i=0; i<sysex_len; i++) {
-						printf("%02X ", sysex_data[i]);  // *new* unsigned char cast suppressed
-					}
-					printf("\n");  // *new*
+				if ((sysex_data[0] == 0xF5) && (sysex_len == 2) && (arguments.num_output_ports == 1)) {
+					/* Port selection sent as sysex message */
+					output_port_num = sysex_data[1];
+					printf("Alsa[%02x]    F5 Port Select        %02X\n", ev_port_num, output_port_num);
 					fflush(stdout);  // *new*
+				} else {
+					if (!arguments.silent && arguments.verbose) {
+						printf("Alsa[%02x]    F0 Sysex len = %04X   ", ev_port_num, sysex_len);
+						int i;
+						for (i=0; i<sysex_len; i++) {
+							printf("%02X ", sysex_data[i]);  // *new* unsigned char cast suppressed
+						}
+						printf("\n");  // *new*
+						fflush(stdout);  // *new*
+					}
+					if (arguments.num_output_ports == 1) {
+						/* Check for last port selection inside sysex message */
+						int i;
+						for (i=sysex_len-2; i>=0; i--) {
+							if (sysex_data[i] == 0xF5) {
+								output_port_num = sysex_data[i+1];
+								if (!arguments.silent && arguments.verbose) {
+									printf("Alsa[%02x]    F5 Port Select        %02X\n", ev_port_num, output_port_num);
+									fflush(stdout);  // *new*
+								}
+								break;
+							}
+						}
+					}
 				}
 				break;
 
@@ -667,7 +750,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[1] = ev->data.control.value;
 				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X MTC Quarter Frame      %02X\n", bytes[0], bytes[1]);
+					printf("Alsa[%02x]    %02X MTC Quarter Frame      %02X\n", ev_port_num, bytes[0], bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -679,7 +762,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = (unsigned char)(ev->data.control.value >> 7);
 				bytes_len = 3;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Song Position      %04X\n", bytes[0], ev->data.control.value);
+					printf("Alsa[%02x]    %02X Song Position      %04X\n", ev_port_num, bytes[0], ev->data.control.value);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -689,7 +772,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[1] = ev->data.control.value;
 				bytes_len = 2;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Song Select        %02X\n", bytes[0], bytes[1]);
+					printf("Alsa[%02x]    %02X Song Select        %02X\n", ev_port_num, bytes[0], bytes[1]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -698,7 +781,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xF6;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Tune Request\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Tune Request\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -707,7 +790,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xF8;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Clock\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Clock\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -716,7 +799,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xF9;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Tick\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Tick\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -725,7 +808,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xFA;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Start\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Start\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -734,7 +817,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xFB;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Continue\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Continue\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -743,7 +826,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xFC;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Stop\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Stop\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -752,7 +835,7 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xFE;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Active Sense\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Active Sense\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -761,28 +844,34 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[0] = 0xFF;
 				bytes_len = 1;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Reset\n", bytes[0]);
+					printf("Alsa[%02x]    %02X Reset\n", ev_port_num, bytes[0]);
 					fflush(stdout);  // *new*
 				}
 				break;
 
 			case SND_SEQ_EVENT_PORT_SUBSCRIBED:
+				num_output_clients++;
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Port connected     %i:%i -> %i:%i\n", bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
+					printf("Alsa[%02x]    %02X Port connected     %i:%i -> %i:%i\n", ev_port_num, bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
 					fflush(stdout);  // *new*
 				}
 				break;
 
 			case SND_SEQ_EVENT_PORT_UNSUBSCRIBED:
+				num_output_clients--;
+				if (num_output_clients == 0) {
+					output_port_index = -1;
+					output_port_num = 1;
+				}
 				if (!arguments.silent && arguments.verbose) {
-					printf("Alsa    %02X Port disconnected  %i:%i -> %i:%i\n", bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
+					printf("Alsa[%02x]    %02X Port disconnected  %i:%i -> %i:%i\n", ev_port_num, bytes[0], ev->data.connect.sender.client, ev->data.connect.sender.port, ev->data.connect.dest.client, ev->data.connect.dest.port);
 					fflush(stdout);  // *new*
 				}
 				break;
 
 			default:
 				if (!arguments.silent) {  // *new*
-					printf("Alsa    %02X Unknown MIDI cmd   %02X\n", 0, ev->type);  // *new*
+					printf("Alsa[%02x]    %02X Unknown MIDI cmd   %02X\n", 0, ev_port_num, ev->type);  // *new*
 					fflush(stdout);  // *new*
 				}
 				break;
@@ -792,59 +881,45 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 		bytes[1] = bytes[1] & 0xFF;  // *new* &0xFF (protection ?)
 		bytes[2] = bytes[2] & 0xFF;  // *new* &0xFF (protection ?)
 */
-		// *new* sysex addition
-		if (sysex_len > 0) {
-			running_status_out = 0;
-			while (run && sysex_len > 0) {
-				written = write(serial, sysex_data, sysex_len);
-				if (written < 0) {
-					if (errno != EINTR) {
-						if (!arguments.silent) {
-							printf("Alsa    Error sending data\n");
-							fflush(stdout);
-						}
-						break;
-					}
-				} else {
-					sysex_data += written;
-					sysex_len -= written;
-					tcdrain(serial);  // *new* (speed up ?)
-				}
-			}
-		} else if (bytes_len > 0) {
-			bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
-			bytes[2] = (bytes[2] & 0x7F);
-			if (bytes[0] >= 0xF8) {
-				/* RealTime messages */
-				bytes_data = bytes;
-			} else if (bytes[0] >= 0xF0) {
-				/* System Common messages */
+		if (sysex_len > 0 || bytes_len > 0) {
+			if (output_port_index != ev_port_index) {
+				/* Send port selection when needed */
+				unsigned char bytes2[2];
+
+				output_port_index = ev_port_index;
 				running_status_out = 0;
-				bytes_data = bytes;
-			} else if (bytes[0] == running_status_out) {
-				/* Don't send running status byte */
-				bytes_data = bytes+1;
-				bytes_len--;
-			} else {
-				/* Update running status */
-				running_status_out = bytes[0];
-				bytes_data = bytes;
+
+				bytes2[0] = 0xF5;
+				bytes2[1] = (arguments.num_output_ports == 1) ? output_port_num : output_port_index + 1;
+
+				write_bytes_to_serial_port(bytes2, 2);
 			}
-			while (run && bytes_len > 0) {
-				written = write(serial, bytes_data, bytes_len);
-				if (written < 0) {
-					if (errno != EINTR) {
-						running_status_out = 0;
-						if (!arguments.silent) {
-							printf("Alsa    Error sending data\n");
-							fflush(stdout);
-						}
-						break;
-					}
+
+			// *new* sysex addition
+			if (sysex_len > 0) {
+				running_status_out = 0;
+				write_bytes_to_serial_port(sysex_data, sysex_len);
+				tcdrain(serial);  // *new* (speed up ?)
+			} else {
+				bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
+				bytes[2] = (bytes[2] & 0x7F);
+				if (bytes[0] >= 0xF8) {
+					/* RealTime messages */
+					bytes_data = bytes;
+				} else if (bytes[0] >= 0xF0) {
+					/* System Common messages */
+					running_status_out = 0;
+					bytes_data = bytes;
+				} else if (bytes[0] == running_status_out) {
+					/* Don't send running status byte */
+					bytes_data = bytes+1;
+					bytes_len--;
 				} else {
-					bytes_data += written;
-					bytes_len -= written;
+					/* Update running status */
+					running_status_out = bytes[0];
+					bytes_data = bytes;
 				}
+				write_bytes_to_serial_port(bytes_data, bytes_len);
 			}
 		}
 
@@ -855,23 +930,39 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 void* read_midi_from_alsa(void* seq)
 {
-	int npfd;
+	int npfd, ret, delta;
 	struct pollfd* pfd;
 	snd_seq_t* seq_handle;
 
 	seq_handle = seq;
 
+	output_port_index = -1;
+	output_port_num = 1;
+	num_output_clients = 0;
+	delta = 0;
+
 	npfd = snd_seq_poll_descriptors_count(seq_handle, POLLIN);
 	pfd = (struct pollfd*) alloca(npfd * sizeof(struct pollfd));
 	snd_seq_poll_descriptors(seq_handle, pfd, npfd, POLLIN);
 
-	running_status_out = 0;
-
 	while (run)
 	{
-		if (poll(pfd,npfd, 100) > 0)
+		ret = poll(pfd,npfd, 100);
+		if (ret > 0)
 		{
+			delta = 0;
 			write_midi_action_to_serial_port(seq_handle);
+		}
+		else if (ret == 0)
+		{
+			/* poll timed out */
+			delta += 100;
+			if (delta >= 3000)
+			{
+				/* resend port selection after 3 seconds with no data to handle device disconnect */
+				delta = 0;
+				output_port_index = -1;
+			}
 		}
 	}
 
@@ -883,7 +974,7 @@ void* read_midi_from_alsa(void* seq)
 void* read_midi_from_serial_port(void* seq)
 {
 	unsigned char buf[BUF_SIZE], running_status_in;  // *new*
-	int i, bytesleft;  // *new* (buflen in JW's code not used)
+	int i, bytesleft, selected_port_num, selected_port_id;  // *new* (buflen in JW's code not used)
 	struct timespec u10ms;
 	struct pollfd fds;
 
@@ -897,6 +988,9 @@ void* read_midi_from_serial_port(void* seq)
 	running_status_in = 0;
 	buf[0] = 0;
 	i = 1;
+	selected_port_num = 1;
+	selected_port_id = port_id[0];
+
 
 	while (run)
 	{
@@ -1020,7 +1114,7 @@ void* read_midi_from_serial_port(void* seq)
 							case 0xF: // Reset
 								/* RealTime message can arrive in the middle of another message */
 								/* Process it immediately and continue reading the original message */
-								parse_midi_command(seq, port_out_id, buf+i, 1);
+								parse_midi_command(seq, selected_port_id, selected_port_num, buf+i, 1);
 								break;
 						}
 						break;
@@ -1039,7 +1133,40 @@ void* read_midi_from_serial_port(void* seq)
 		if (!run) break;
 
 		/* parse MIDI message */
-		parse_midi_command(seq, port_out_id, buf, i);  // *new* (was i+1 in EB's code)
+		if (buf[0] == 0xF5)
+		{
+			/* Port Selection */
+			int prev_port_num;
+
+			prev_port_num = selected_port_num;
+
+			if ((buf[1] == 0) || (buf[1] == 0x7F))
+			{
+				/* unselected port or all? ports */
+				selected_port_num = 1;
+			}
+			else
+			{
+				selected_port_num = buf[1];
+			}
+
+			if (arguments.num_input_ports == 1)
+			{
+				parse_midi_command(seq, selected_port_id, prev_port_num, buf, i);
+			}
+			else
+			{
+				selected_port_id = (selected_port_num <= arguments.num_input_ports) ? port_id[selected_port_num-1] : -1;
+				if (!arguments.silent && arguments.verbose) {
+					printf("Serial[%02x]  Port Select             %02x\n", prev_port_num, buf[1]);
+					fflush(stdout);  // *new*
+				}
+			}
+		}
+		else
+		{
+			parse_midi_command(seq, selected_port_id, selected_port_num, buf, i);  // *new* (was i+1 in EB's code)
+		}
 	}
 
 	return NULL;
@@ -1060,10 +1187,10 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	argp_parse(&argp, argc, argv, 0, 0, &arguments);
 
 	/*
-	 * Open MIDI output port
+	 * Open MIDI ports
 	 */
 
-	port_out_id = open_seq(&seq);
+	open_seq(&seq);
 
 	/*
 	 *  Open modem device for reading and not as controlling tty because we don't
@@ -1162,11 +1289,19 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	int iret1, iret2;
 	pthread_attr_init(&thread_attr);
 	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
-	iret1 = pthread_create(&midi_out_thread, &thread_attr, read_midi_from_alsa, (void*) seq);
+	if (arguments.num_input_ports)
+	{
+		iret1 = pthread_create(&midi_out_thread, &thread_attr, read_midi_from_alsa, (void*) seq);
+	}
+	else iret1 = -1;
 	/* And also thread for polling serial data. As serial is currently read in
 		blocking mode, by this we can enable ctrl+c quiting and avoid zombie
 		alsa ports when killing app with ctrl+z */
-	iret2 = pthread_create(&midi_in_thread, &thread_attr, read_midi_from_serial_port, (void*) seq);
+	if (arguments.num_input_ports)
+	{
+		iret2 = pthread_create(&midi_in_thread, &thread_attr, read_midi_from_serial_port, (void*) seq);
+	}
+	else iret2 = -1;
 	pthread_attr_destroy(&thread_attr);
 
 	while (run)
@@ -1187,5 +1322,8 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	/* restore the old port settings */
 	tcsetattr(serial, TCSANOW, &oldtio);
 	close(serial);
+
+	close_seq(seq);
+
 	printf("\ndone!\n");
 }
