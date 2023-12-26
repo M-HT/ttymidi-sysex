@@ -141,6 +141,12 @@ void exit_cli(int sig)
 	run = FALSE;
 }
 
+void exit_hangup(void)
+{
+	if (run) printf("\nhangup detected...");
+	exit_cli(0);
+}
+
 static error_t parse_opt (int key, char *arg, struct argp_state *state)
 {
 	/* Get the input argument from argp_parse, which we
@@ -545,7 +551,7 @@ void write_bytes_to_serial_port(unsigned char *bytes_data, int bytes_len)
 			if (errno != EINTR) {
 				running_status_out = 0;
 				if (!arguments.silent) {
-					printf("Alsa    Error sending data\n");
+					printf("Alsa    Error sending data %d\n", errno);
 					fflush(stdout);
 				}
 				break;
@@ -942,14 +948,25 @@ void* read_midi_from_alsa(void* seq)
 	delta = 0;
 
 	npfd = snd_seq_poll_descriptors_count(seq_handle, POLLIN);
-	pfd = (struct pollfd*) alloca(npfd * sizeof(struct pollfd));
+	pfd = (struct pollfd*) alloca((npfd + 1) * sizeof(struct pollfd));
 	snd_seq_poll_descriptors(seq_handle, pfd, npfd, POLLIN);
+	pfd[npfd].fd = serial;
+	pfd[npfd].events = 0;
 
 	while (run)
 	{
-		ret = poll(pfd,npfd, 100);
+		ret = poll(pfd, npfd + (arguments.num_input_ports == 0 ? 1 : 0), 100);
 		if (ret > 0)
 		{
+			if (arguments.num_input_ports == 0 && pfd[npfd].revents)
+			{
+				/* handle hangup event */
+				if (pfd[npfd].revents & POLLHUP) {
+					exit_hangup();
+					break;
+				}
+				if (ret == 1) continue;
+			}
 			delta = 0;
 			write_midi_action_to_serial_port(seq_handle);
 		}
@@ -1028,11 +1045,19 @@ void* read_midi_from_serial_port(void* seq)
 			int ret = poll(&fds, 1, 1000);
 			if (ret == 0) continue; // timeout
 			if (ret > 0) {
-				ret = read(serial, buf+i, 1);
+				/* handle hangup/error event */
+				if (fds.revents & POLLHUP) {
+					exit_hangup();
+					break;
+				} else if (fds.revents & POLLERR) {
+					ret = 0;
+				} else {
+					ret = read(serial, buf+i, 1);
+				}
 			}
 			if (ret <= 0) {
 				/* serial error somewhere */
-				printf("SerialIn error %02X %d %d\n", buf[0], ret, errno);
+				printf("SerialIn error %02X %d %d %04X\n", buf[0], ret, errno, fds.revents);
 				nanosleep(&u10ms, NULL);
 				continue;
 			}
@@ -1289,7 +1314,7 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	int iret1, iret2;
 	pthread_attr_init(&thread_attr);
 	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
-	if (arguments.num_input_ports)
+	if (arguments.num_output_ports)
 	{
 		iret1 = pthread_create(&midi_out_thread, &thread_attr, read_midi_from_alsa, (void*) seq);
 	}
@@ -1306,7 +1331,7 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 
 	while (run)
 	{
-		sleep(100);
+		sleep(1);
 	}
 
 	void* status;
