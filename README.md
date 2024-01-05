@@ -1,5 +1,19 @@
 # ttymidi-sysex
-New version of ttymidi handling midi and bi-directional sysex messages
+This is a modified version of ttymidi-sysex.
+
+[ttymidi-sysex](https://github.com/cchaussat/ttymidi-sysex) is a modified version of [ttymidi](http://www.varal.org/ttymidi/), which adds support for System Exclusive MIDI messages.
+
+This version makes following changes on top of ttymidi-sysex:
+
+- bug fixes and other source code improvements
+- handle System Common and System Realtime MIDI messages
+- support 31250 baud rate (for serial devices that support it)
+- handle running status on serial input and output
+- support multiple MIDI input and output ports using non-standard System Common MIDI message `F5 nn`
+
+---
+
+Original ttymidi-sysex readme:
 
 	*new* by cchaussat
 	Original ttymidi source code v0.60 (from Feb. 1st 2012)
