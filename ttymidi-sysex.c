@@ -124,12 +124,13 @@ static struct argp_option options[] =
 	{"name"         , 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi" },
 	{"inputs"       , 'i', "NUM" , 0, "Number of MIDI inputs. Default = 1" },
 	{"outputs"      , 'o', "NUM" , 0, "Number of MIDI outputs. Default = 1" },
+	{"daemonize"    , 'd', 0     , 0, "Run as daemon" },
 	{ 0 }
 };
 
 typedef struct _arguments
 {
-	int  silent, verbose, printonly, num_input_ports, num_output_ports;
+	int  silent, verbose, printonly, num_input_ports, num_output_ports, daemonize;
 	char serialdevice[MAX_DEV_STR_LEN];
 	speed_t baudrate, customrate;
 	char name[MAX_DEV_STR_LEN];
@@ -214,6 +215,9 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 				arguments->num_output_ports = int_value;
 			}
 			break;
+		case 'd':
+			arguments->daemonize = 1;
+			break;
 
 		case ARGP_KEY_ARG:
 		case ARGP_KEY_END:
@@ -234,6 +238,7 @@ void arg_set_defaults(arguments_t *arguments)
 	arguments->verbose          = 0;
 	arguments->num_input_ports  = 1;
 	arguments->num_output_ports = 1;
+	arguments->daemonize        = 0;
 	arguments->baudrate         = B115200;
 	arguments->customrate       = 0 ;
 	char *name_tmp		= (char *)"ttymidi";
@@ -1329,6 +1334,15 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	}
 	else iret2 = -1;
 	pthread_attr_destroy(&thread_attr);
+
+	if (arguments.daemonize)
+	{
+		if (daemon(0, 0) < 0)
+		{
+			run = 0;
+			fprintf(stderr, "Error running as daemon\n");
+		}
+	}
 
 	while (run)
 	{
