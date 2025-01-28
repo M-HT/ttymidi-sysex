@@ -72,6 +72,7 @@
 */
 
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -85,6 +86,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <poll.h>
+#include <pwd.h>
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
@@ -252,6 +254,110 @@ static char doc[]       = "ttymidi - Connect serial port devices to ALSA MIDI pr
 static struct argp argp = { options, parse_opt, 0, doc };
 arguments_t arguments;
 
+
+static int drop_privileges(void)
+{
+	uid_t uid;
+	gid_t gid;
+	const char *sudo_id;
+	long long int llid;
+	const char *xdg_dir;
+	char buf[32];
+	struct stat statbuf;
+	struct passwd *passwdbuf;
+
+	if (getuid() != 0)
+	{
+		return 0;
+	}
+
+	sudo_id = secure_getenv("SUDO_UID");
+	if (sudo_id == NULL)
+	{
+		sudo_id = secure_getenv("PKEXEC_UID");
+		if (sudo_id == NULL)
+		{
+			return -1;
+		}
+	}
+
+	errno = 0;
+	llid = strtoll(sudo_id, NULL, 10);
+	uid = (uid_t) llid;
+	if (errno != 0 || uid == 0 || llid != (long long int)uid)
+	{
+		return -2;
+	}
+
+	gid = getgid();
+	if (gid == 0)
+	{
+		sudo_id = secure_getenv("SUDO_GID");
+		if (sudo_id == NULL)
+		{
+			passwdbuf = getpwuid(uid);
+			if (passwdbuf != NULL)
+			{
+				gid = passwdbuf->pw_gid;
+			}
+
+			if (gid == 0)
+			{
+				return -3;
+			}
+		}
+		else
+		{
+			errno = 0;
+			llid = strtoll(sudo_id, NULL, 10);
+			gid = (gid_t) llid;
+			if (errno != 0 || gid == 0 || llid != (long long int)gid)
+			{
+				return -4;
+			}
+		}
+	}
+
+	if (setgid(gid) != 0)
+	{
+		return -5;
+	}
+	if (setuid(uid) != 0)
+	{
+		return -6;
+	}
+
+	printf("Dropped root privileges\n");
+
+	chdir("/");
+
+	// define some environment variables
+
+	xdg_dir = getenv("XDG_RUNTIME_DIR");
+	if ((xdg_dir == NULL) || (*xdg_dir == 0))
+	{
+		snprintf(buf, 32, "/run/user/%lli", (long long int)uid);
+
+		if ((stat(buf, &statbuf) == 0) && ((statbuf.st_mode & S_IFMT) == S_IFDIR) && (statbuf.st_uid == uid))
+		{
+			// if XDG_RUNTIME_DIR is not defined and directory /run/user/$USER exists then use it for XDG_RUNTIME_DIR
+			setenv("XDG_RUNTIME_DIR", buf, 1);
+
+			xdg_dir = getenv("XDG_CONFIG_HOME");
+			if ((xdg_dir == NULL) || (*xdg_dir == 0))
+			{
+				passwdbuf = getpwuid(uid);
+				if (passwdbuf != NULL)
+				{
+					// also if XDG_CONFIG_HOME is not defined then define it as user's home directory
+					setenv("XDG_CONFIG_HOME", passwdbuf->pw_dir, 1);
+				}
+			}
+		}
+	}
+
+	return 0;
+}
 
 /* --------------------------------------------------------------------- */
 // MIDI stuff
@@ -1234,6 +1340,11 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	{
 		perror(arguments.serialdevice);
 		exit(-1);
+	}
+
+	if (drop_privileges() < 0)
+	{
+		fprintf(stderr, "Error dropping root privileges\n");
 	}
 
 	/* save current serial port settings */
