@@ -1,0 +1,8 @@
+all: ttymidi-sysex
+
+ttymidi-sysex: ttymidi-sysex.c
+	gcc -O3 -Wall -pipe -march=armv7ve+simd -mcpu=cortex-a15 -mtune=cortex-a15 -mfpu=neon-vfpv4 -mfloat-abi=hard -mthumb -o ttymidi-sysex ttymidi-sysex.c -lasound -lpthread
+
+.PHONY: clean
+clean:
+	rm -f ttymidi-sysex

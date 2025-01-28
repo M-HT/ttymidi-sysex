@@ -1,0 +1,8 @@
+all: ttymidi-sysex
+
+ttymidi-sysex: ttymidi-sysex.c
+	$(PNDSDK)/bin/pandora-gcc -O3 -Wall -Dsecure_getenv=__secure_getenv -o ttymidi-sysex ttymidi-sysex.c -lasound -lpthread -I$(PNDSDK)/usr/include -L$(PNDSDK)/usr/lib
+
+.PHONY: clean
+clean:
+	rm -f ttymidi-sysex
