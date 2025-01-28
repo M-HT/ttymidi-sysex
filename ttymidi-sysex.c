@@ -635,10 +635,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 			case SND_SEQ_EVENT_CONTROL14:
 				bytes[0] = 0xB0 + ev->data.control.channel;
-				bytes[1] = ev->data.control.param;
-				bytes[2] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
-				bytes[3] = ev->data.control.param + 32;
-				bytes[4] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[1] = ev->data.control.param + 32; // at least one synth (WebSynth D-77) requires sending data entry LSB before data entry MSB
+				bytes[2] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[3] = ev->data.control.param;
+				bytes[4] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
 				if (ev->data.control.param >= 0 && ev->data.control.param < 32)
 				{
 					bytes_len = 5;
@@ -662,10 +662,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = (unsigned char)((ev->data.control.param >> 7) & 0x7F);
 				bytes[3] = 0x62; // NRPN LSB
 				bytes[4] = (unsigned char)(ev->data.control.param & 0x7F);
-				bytes[5] = 0x06; // data entry MSB
-				bytes[6] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
-				bytes[7] = 0x26; // data entry LSB
-				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[5] = 0x26; // data entry LSB - at least one synth (WebSynth D-77) requires sending data entry LSB before data entry MSB
+				bytes[6] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[7] = 0x06; // data entry MSB
+				bytes[8] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
 				bytes_len = 9;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa[%02x]    %02X 14 bit NRPN        %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
@@ -679,10 +679,10 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 				bytes[2] = (unsigned char)((ev->data.control.param >> 7) & 0x7F);
 				bytes[3] = 0x64; // RPN LSB
 				bytes[4] = (unsigned char)(ev->data.control.param & 0x7F);
-				bytes[5] = 0x06; // data entry MSB
-				bytes[6] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
-				bytes[7] = 0x26; // data entry LSB
-				bytes[8] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[5] = 0x26; // data entry LSB - at least one synth (WebSynth D-77) requires sending data entry LSB before data entry MSB
+				bytes[6] = (unsigned char)(ev->data.control.value & 0x7F);
+				bytes[7] = 0x06; // data entry MSB
+				bytes[8] = (unsigned char)((ev->data.control.value >> 7) & 0x7F);
 				bytes_len = 9;
 				if (!arguments.silent && arguments.verbose) {
 					printf("Alsa[%02x]    %02X 14 bit RPN         %02X %04X %04X\n", ev_port_num, bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.param, ev->data.control.value);
