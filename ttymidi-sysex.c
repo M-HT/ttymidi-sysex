@@ -1436,6 +1436,15 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	sigaction(SIGINT, &signal_action, NULL);
 	sigaction(SIGTERM, &signal_action, NULL);
 
+	if (arguments.daemonize)
+	{
+		if (daemon(0, 0) < 0)
+		{
+			run = 0;
+			fprintf(stderr, "Error running as daemon\n");
+		}
+	}
+
 	/* Starting thread that is polling alsa midi in port */
 	pthread_t midi_out_thread, midi_in_thread;
 	pthread_attr_t thread_attr;
@@ -1456,15 +1465,6 @@ int main(int argc, char** argv)  // *new* int to remove compilation warning
 	}
 	else iret2 = -1;
 	pthread_attr_destroy(&thread_attr);
-
-	if (arguments.daemonize)
-	{
-		if (daemon(0, 0) < 0)
-		{
-			run = 0;
-			fprintf(stderr, "Error running as daemon\n");
-		}
-	}
 
 	while (run)
 	{
