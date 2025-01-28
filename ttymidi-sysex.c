@@ -683,7 +683,18 @@ void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
 
 	do
 	{
-		snd_seq_event_input(seq_handle, &ev);
+		bytes_len = snd_seq_event_input(seq_handle, &ev);
+		if (bytes_len < 0)
+		{
+			if (bytes_len == -ENOSPC)
+			{
+				if (!arguments.silent) {
+					printf("Alsa    Input buffer overflow\n");
+					fflush(stdout);
+				}
+			}
+			continue;
+		}
 
 		bytes_len = 0;
 		sysex_len = 0;
